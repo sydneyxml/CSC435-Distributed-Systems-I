@@ -1,0 +1,79 @@
+// Ximan Liu
+
+
+Last login: Sun May  3 13:47:49 on ttys000
+liuximandeMacBook-Air:~ liuximan$ cd /Users/liuximan/Desktop/MyWebserver 
+liuximandeMacBook-Air:MyWebserver liuximan$ javac MyWebServer.java
+liuximandeMacBook-Air:MyWebserver liuximan$ java MyWebServer
+Ximan Liu's Port listener running at 2540.
+
+/dog.txt
+: local
+Reset connection. Start listening! 
+/favicon.ico
+Reset connection. Start listening! 
+
+
+/cat.html
+/cat.html
+: local
+Reset connection. Start listening! 
+/favicon.ico
+Reset connection. Start listening! 
+
+
+/sub-a/sub-b/cat.html
+/sub-a/sub-b/cat.html
+: local
+Reset connection. Start listening! 
+/favicon.ico
+Reset connection. Start listening! 
+
+
+/
+/
+: local
+Reset connection. Start listening! 
+/.DS_Store
+/.DS_Store
+: local
+Reset connection. Start listening! 
+/.DS_Store
+/.DS_Store
+: local
+Reset connection. Start listening! 
+/.DS_Store
+/.DS_Store
+: local
+Reset connection. Start listening! 
+/.DS_Store
+/.DS_Store
+: local
+Reset connection. Start listening! 
+/.DS_Store
+/.DS_Store
+: local
+Reset connection. Start listening! 
+/.DS_Store
+/.DS_Store
+: local
+Reset connection. Start listening! 
+/.DS_Store
+/.DS_Store
+: local
+Reset connection. Start listening! 
+/.DS_Store
+/.DS_Store
+: local
+Reset connection. Start listening! 
+/.DS_Store
+/.DS_Store
+: local
+Reset connection. Start listening! 
+/.DS_Store
+/.DS_Store
+: local
+Reset connection. Start listening!
+
+
+
