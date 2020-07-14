@@ -1,0 +1,67 @@
+// Ximan Liu
+
+
+Last login: Fri May  1 18:09:06 on ttys000
+liuximandeMacBook-Air:~ liuximan$ cd /Users/liuximan/Desktop/WebServer 
+liuximandeMacBook-Air:WebServer liuximan$ javac MyListener.java
+liuximandeMacBook-Air:WebServer liuximan$ java MyListener
+Clark Elliott's Port listener running at 2540.
+
+GET /dog.txt HTTP/1.1
+Host: localhost:2540
+User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.14; rv:75.0) Gecko/20100101 Firefox/75.0
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8
+Accept-Language: en-US,en;q=0.5
+Accept-Encoding: gzip, deflate
+Connection: keep-alive
+Upgrade-Insecure-Requests: 1
+
+GET /cat.html HTTP/1.1
+Host: localhost:2540
+User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.14; rv:75.0) Gecko/20100101 Firefox/75.0
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8
+Accept-Language: en-US,en;q=0.5
+Accept-Encoding: gzip, deflate
+Connection: keep-alive
+Upgrade-Insecure-Requests: 1
+
+
+
+
+liuximandeMacBook-Air:~ liuximan$ cd /Users/liuximan/Desktop/WebServer 
+liuximandeMacBook-Air:WebServer liuximan$ javac MyTelnetClient.java
+liuximandeMacBook-Air:WebServer liuximan$ java MyTelnetClient condor.depaul.edu
+Clark Elliott's MyTelnet Client, 1.0.
+
+Using server: condor.depaul.edu, Port: 80
+Enter text to send to the server, <stop> to end: GET /elliott/dog.txt HTTP/1.1
+Enter text to send to the server, <stop> to end: Host: condor.depaul.edu:80
+Enter text to send to the server, <stop> to end: 
+Enter text to send to the server, <stop> to end: 
+Enter text to send to the server, <stop> to end: stop
+HTTP/1.1 400 Bad Request
+Date: Fri, 01 May 2020 23:50:00 GMT
+Server: Apache
+Content-Length: 226
+Connection: close
+Content-Type: text/html; charset=iso-8859-1
+
+<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">
+<html><head>
+<title>400 Bad Request</title>
+</head><body>
+<h1>Bad Request</h1>
+<p>Your browser sent a request that this server could not understand.<br />
+</p>
+</body></html>
+java.net.SocketException: Connection reset
+	at java.base/java.net.SocketInputStream.read(SocketInputStream.java:186)
+	at java.base/java.net.SocketInputStream.read(SocketInputStream.java:140)
+	at java.base/sun.nio.cs.StreamDecoder.readBytes(StreamDecoder.java:284)
+	at java.base/sun.nio.cs.StreamDecoder.implRead(StreamDecoder.java:326)
+	at java.base/sun.nio.cs.StreamDecoder.read(StreamDecoder.java:178)
+	at java.base/java.io.InputStreamReader.read(InputStreamReader.java:185)
+	at java.base/java.io.BufferedReader.fill(BufferedReader.java:161)
+	at java.base/java.io.BufferedReader.readLine(BufferedReader.java:326)
+	at java.base/java.io.BufferedReader.readLine(BufferedReader.java:392)
+	at MyTelnetClient.main(MyTelnetClient.java:44)
