@@ -1,0 +1,2122 @@
+// Ximan Liu
+// BlockChainTII.txt
+
+
+
+/*--------------------------------------------------------
+
+1. Name / Date:
+
+Ximan Liu
+2020.5.27
+
+2. Java version used, if not the official version for the class:
+
+Java 8
+
+3. Precise command-line compilation examples / instructions:
+
+> javac -cp "gson-2.8.2.jar" *.java
+
+or
+
+> javac -cp "gson-2.8.2.jar" Blockchain.java
+
+
+4. Precise examples / instructions to run this program:
+
+In separate shell windows:
+// for MacOS
+> java -cp ".:gson-2.8.2.jar" Blockchain 0
+> java -cp ".:gson-2.8.2.jar" Blockchain 1
+> java -cp ".:gson-2.8.2.jar" Blockchain 2
+
+5. List of files needed for running the program.
+
+ a. Blockchain.java
+ b. BlockchainLog.txt
+ c. BlockInput0.txt
+ d. BlockInput1.txt
+ e. BlockInput2.txt
+ f. BlockchainLedgerSample.json
+ g. checklist-block.html
+
+
+6. Notes:
+
+This file will produce JSON file and will marshall the record over a socket.
+
+----------------------------------------------------------*/
+
+
+import java.net.*;
+import java.lang.reflect.Type;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.io.StringReader;
+import java.security.spec.PKCS8EncodedKeySpec;
+import javax.crypto.Cipher;
+import java.security.*;
+import java.security.spec.*;
+import java.util.*;
+import java.util.Date;
+import java.util.Random;
+import java.util.UUID;
+import java.util.Base64;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.PriorityBlockingQueue;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
+import java.text.*;
+
+import com.google.gson.*;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.reflect.TypeToken;
+
+import javax.xml.bind.DatatypeConverter;
+
+import java.io.*;
+import java.io.StringWriter;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.PrintStream;
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.FileReader;
+import java.io.Reader;
+
+
+//class for unverified block
+class UB extends Thread {
+ public Socket socket;
+ // constructor
+ UB(Socket socket) {this.socket = socket;}
+
+ public void run() {
+     try {
+         // set up input from UB
+    	 BufferedReader input = new BufferedReader(new InputStreamReader(this.socket.getInputStream()));
+         // initialize
+         String nb = "";
+         // catch 
+         String content;           
+         // while loop when content is not null
+         while ((content = input.readLine()) != null) {
+         	nb += content;
+         }
+         // prior queue
+         Blockchain.brq.put(Tools.remodifyrecord(nb)); 
+         // close socket
+         input.close();
+         this.socket.close();
+     } catch (Exception x) {
+         Blockchain.errorprinter("Error!", x);
+         }
+     }
+ }
+
+
+//class unverified block thread
+class ubthread implements Runnable {
+ // constructor
+	public int porttouse;
+	ubthread(int porttouse) {this.porttouse = porttouse;}
+
+ public void run() {
+ 	// number of order
+     int length = 15;
+     // set up socket
+     Socket socket;
+
+     try {
+     	// set up serversocket with port and length
+         ServerSocket serversocket = new ServerSocket(porttouse, length);
+         
+         // forever true loop
+         while (true) {
+             // build up serversocket connection
+             socket = serversocket.accept();
+             // start
+             new UB(socket).start();
+             }
+         } catch (IOException x) {
+         Blockchain.errorprinter("Error!", x);
+         }
+     }
+ }
+
+
+//class blockchain thread
+class bcthread implements Runnable {
+ // constructor
+	public int portforuse;
+	bcthread(int portforuse) {this.portforuse = portforuse;}
+
+ public void run() {
+ 	// number of order
+     int length = 15;
+     // set up socket
+     Socket socket;
+
+     try {
+     	// initialize serversocket with port and length
+         ServerSocket serversocket = new ServerSocket(portforuse, length);
+         
+         // forever true
+         while (true) {
+             // build up serversocket connection
+             socket = serversocket.accept();
+             // start
+             new BC(socket).start();
+         }
+     } catch (IOException x) {
+         Blockchain.errorprinter("Error!", x);
+         }
+     }
+ }
+
+
+//class public key thread
+class pkthread implements Runnable {
+ // constructor
+	public int portpk;
+	pkthread(int portpk) {this.portpk = portpk;}
+
+ public void run() {
+ 	// number of order
+     int length = 15;
+     // set up socket
+     Socket socket;
+
+     try{
+     	// set up serversocket with port and length
+         ServerSocket serversocket = new ServerSocket(portpk, length);
+         
+         while (true){
+         	// build up serversocket connection
+             socket = serversocket.accept();
+             // start
+             new PK(socket).start();
+             }
+         } catch (IOException x) {
+         Blockchain.errorprinter("Error!", x);
+         }
+     }
+ }
+
+
+// produce, signature, and check keys
+class Key {
+	// initialize with null
+    private KeyPair kp = null;
+    private PublicKey publickey = null;
+    private PrivateKey privatekey = null;
+    private Signature sign = null;
+    
+    // public key
+    public Key(PublicKey publickey) {
+    	String sig = "SHA1withRSA";
+    	try {
+    		this.sign = Signature.getInstance(sig);
+    	} catch (NoSuchAlgorithmException x) {
+    		Blockchain.errorprinter("Error!", x);
+    	}
+    	// public key constructor
+    	this.publickey = publickey;
+    }
+ 
+    public Key() {     
+    	String sig = "SHA1withRSA";
+    	try {
+    		// backup private key
+            this.sign = Signature.getInstance(sig);
+    	} catch (NoSuchAlgorithmException x) {
+    		Blockchain.errorprinter("Error!", x);
+    	}
+    }
+   
+    // create key pair
+    public void createkp(long randseed) {
+        String enAlg = "RSA";
+        String hashAlg = "SHA1PRNG";
+        String hashAlgSupport = "SUN";
+        try {
+        	// be called in the final step
+        	// backup private key
+        	KeyPairGenerator kpg = KeyPairGenerator.getInstance(enAlg);
+        	SecureRandom sr = SecureRandom.getInstance(hashAlg, hashAlgSupport);
+        	sr.setSeed(randseed);
+        	kpg.initialize(1024, sr);
+        	this.kp = kpg.generateKeyPair();
+        	this.publickey = kp.getPublic();
+        	this.privatekey = kp.getPrivate();    
+        } catch (NoSuchAlgorithmException x) {
+        	Blockchain.errorprinter("Error!", x);
+        	} catch (NoSuchProviderException x) {
+        		Blockchain.errorprinter("Error!", x);
+        		}
+    }
+    
+    // get public key
+    public PublicKey Getpublickey() {
+        return this.publickey;
+    }
+
+    public byte[] signbyte (byte[] data) {
+    	try {
+    		this.sign.initSign(this.privatekey);
+    		this.sign.update(data);
+    		return this.sign.sign();
+    	} catch (SignatureException x) {
+			Blockchain.errorprinter("Error!", x);
+			return null;
+		}
+    	catch (InvalidKeyException x) {
+			Blockchain.errorprinter("Error!", x);
+			return null;
+		}
+    }
+    
+    // check whether data are the same before and after signed
+    public boolean verifySig(byte[] data, byte[] sigdata) {
+    	try {
+            this.sign.initVerify(this.publickey);
+            this.sign.update(data);
+            return (this.sign.verify(sigdata));
+        }
+    	catch (SignatureException x) {
+    		Blockchain.errorprinter("Error!", x);
+    		return false;
+    	}
+    	catch (InvalidKeyException x) {
+    		Blockchain.errorprinter("Error!", x);
+    		return false;
+    	}
+    }
+}
+
+
+//class thread reader
+class threadreader implements Runnable {
+ // initialize port
+	public int porttr = 6000;
+
+ public void run() {
+ 	// number of order
+     int length = 15;
+     // set up socket
+     Socket socket;
+
+     try {
+     	// set up serversocket with port and length
+         ServerSocket serversocket = new ServerSocket(porttr, length);
+         
+         // set up key and key pair
+         Key Key = new Key();
+         Key.createkp(1000);
+
+         // send public key to processor
+         Tools.setkey(Key);
+         Tools.sendkey(port.getkspInUse());
+         
+
+
+         while (true) {
+         	// build up serversocket connection
+             socket = serversocket.accept();
+             // start
+             new KeyHelper(socket, Key).start();
+         }
+     } catch (IOException x) {
+         Blockchain.errorprinter("Error!", x);
+         }
+     }
+ }
+
+
+// class port
+class port {
+	// initialize port
+	public static int Kport = 4710;
+	public static int UBport = 4820;
+	public static int BCport = 4930;
+	public static final int KeyPort = 6000;
+	
+	public static int advKport;
+    public static int advUBport;
+    public static int advBCport;
+	
+	// constructor
+    public static int[] KportUse = new int[Blockchain.processor];
+    public static int[] UBportUse = new int[Blockchain.processor];
+    public static int[] BCportUse = new int[Blockchain.processor];
+
+    // mark the port in processing
+    public static void setport(int process) {
+        for (int i = 0; i < process; i++) {
+            KportUse[i] = Kport + i;
+            UBportUse[i] = UBport + i;
+            BCportUse[i] = BCport + i;
+        }
+    }
+
+    // set port for increasing PID to base
+    public static void settask(int PID) {
+        advKport = PID + Kport;
+        advUBport = PID + UBport;
+        advBCport = PID + BCport;
+    }
+    
+    // get key server port
+    public static int getksp() {
+        return advKport;
+    }
+    // get unverified block server port
+    public static int getubsp() {
+        return advUBport;
+    }
+    // get block chain server port
+    public static int getbcsp() {
+        return advBCport;
+    }
+    // get key server port in use
+    public static int[] getkspInUse() {
+        return KportUse;
+    }
+    // get unverified block server port in use
+    public static int[] getubspInUse() {
+        return UBportUse;
+    }
+    // get Blockchain port in use
+    public static int[] getbcspInUse() {
+        return BCportUse;
+    }
+}
+
+
+// class data
+class data {	
+	// set up string
+    String FName = "";
+    String LName = "";
+	String SSNum = "";
+    String DOB = "";
+    String Diag = "";
+    String Treat = "";
+	String Rx = "";
+
+    // get first name
+    public String getFName() {
+        return this.FName;
+    }
+   // set first name
+    public void setFName(String FName) {
+        this.FName = FName;
+    }
+    // get last name
+    public String getLName() {
+        return LName;
+    }
+    // set last name
+    public void setLName(String LName) {
+        this.LName = LName;
+    }
+    // set SSN
+    public void setSSNum(String SSNum) {
+        this.SSNum = SSNum;
+    }
+    // set date of birth
+    public void setDOB(String DOB) {
+        this.DOB = DOB;
+    }
+    // set diag
+    public void setDiag(String Diag) {
+        this.Diag = Diag;
+    }
+    // set treat
+    public void setTreat(String Treat) {
+        this.Treat = Treat;
+    }
+    // set Rx
+    public void setRx(String Rx) {
+        this.Rx = Rx;
+    }
+}
+
+
+// blockchain field
+class blockrecord implements Comparable<blockrecord>, Comparator<blockrecord> {
+	// constructor
+    public data data = new data();
+    public int blocknum;
+    public String hashedSHA256data;
+    public String signedSHA256data;
+    public Date temptime = new Date();
+    public String BlockID;
+    public String signBID;
+    public String VPID;
+    public String process;
+    public String prevhash;
+    public String seed;
+    
+    // get data
+    public data getdata() {
+        return this.data;
+    }
+    // get block number
+    public int getblocknum() {
+        return blocknum;
+    }
+    // set block number
+    public void setblocknum(int blocknum) {
+        this.blocknum = blocknum;
+    }
+    // get hashed data
+    public String usehashedSHA256data() {
+        return hashedSHA256data;
+    }
+    // set hashed data
+    public void sethashedSHA256data(String hashedSHA256data) {
+        this.hashedSHA256data = hashedSHA256data;
+    }
+	// get signed data
+    public String getsignedSHA256data(){
+        return signedSHA256data;
+    }
+    // set signed data
+    public void setsignedSHA256data(String signedSHA256data){
+        this.signedSHA256data = signedSHA256data;
+    }
+    // get previous hash
+    public String getprevhash() {
+        return this.prevhash;
+    }
+    // set previous hash
+    public void setprevhash(String prevhash) {
+        this.prevhash = prevhash;
+    }
+    // get value
+    public String getseed() {
+        return this.seed;
+    }
+    // set value
+    public void setseed(String seed) {
+        this.seed = seed;
+    }
+    // set process
+    public void setprocess(String process) {
+        this.process = process;
+    }
+    // set verify PID
+    public void setVPID(String VPID) {
+        this.VPID = VPID;
+    }
+    // get block id
+    public String getBlockID() {
+        return this.BlockID;
+    }
+    // set block id
+    public void setBlockID(String BlockID) {
+        this.BlockID = BlockID;
+    }
+    // get signed block id
+    public String getsignBID() {
+        return this.signBID;
+    }
+    // set signed block id
+    public void setsignBID(String signBID) {
+        this.signBID = signBID;
+    }
+
+    // compare block record
+    @Override
+    public int compareTo(blockrecord br) {
+        return this.temptime.compareTo(br.temptime);
+    }
+    // difference between block record
+    @Override
+    public int compare(blockrecord m, blockrecord n) {
+        return (m.blocknum - n.blocknum);
+    }
+}
+
+
+// class Tools singleton pattern
+class Tools {
+	// constructor
+    public static Key Key = null;
+    public static Key getkey() {return Key;}
+    public static void setkey(Key key) {Key = key;}
+
+    // read into content and switch into a block record
+    public static ArrayList<blockrecord> arrinput(String filename, int PID) {
+        ArrayList<blockrecord> blockrecord = new ArrayList<blockrecord>();
+        String currPID = Integer.toString(PID);
+
+        // read input content
+        try (BufferedReader bufferreader = new BufferedReader(new FileReader(filename))) {
+            // local variable
+        	String input;
+            while ((input = bufferreader.readLine()) != null) {
+                // block record
+            	blockrecord Record = new blockrecord();
+                // head
+                Record.setBlockID(new String(UUID.randomUUID().toString()));
+                Record.setprocess(currPID);
+                // split input content
+                String[] inputline = input.split(" +");
+                // personal information
+                Record.getdata().setFName(inputline[0]);
+                Record.getdata().setLName(inputline[1]);
+                Record.getdata().setDOB(inputline[2]);
+                Record.getdata().setSSNum(inputline[3]);
+                Record.getdata().setDiag(inputline[4]);
+                Record.getdata().setTreat(inputline[5]);
+                Record.getdata().setRx(inputline[6]);
+                // add record
+                blockrecord.add(Record);
+            }
+        }
+        catch (Exception x) {
+            Blockchain.errorprinter("Error!", x);
+        }
+        // print out
+        System.out.println(blockrecord.size() + " blockrecord.");
+        System.out.println("Content names: ");
+        for (blockrecord record : blockrecord) {
+            System.out.println("\t" + record.getdata().getFName() + " " + record.getdata().getLName());
+        }
+        return blockrecord;
+    }
+
+    // modify record
+    public static String modifyrecord (ArrayList<blockrecord> blockrecord) {
+        Gson gs = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
+        return gs.toJson(blockrecord);
+    }
+
+    // modify data
+    public static String modifydata (data data) {
+        Gson gs = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
+        return gs.toJson(data);
+    }
+
+    // modify a block record
+    public static String modifyrecord (blockrecord blockrecord) {
+        Gson gs = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
+        return gs.toJson(blockrecord);
+    }
+
+    public static blockrecord remodifyrecord (String record) {
+        return new Gson().fromJson(record, blockrecord.class);
+    }
+    
+    //modify blockrecord ledger
+    public static ArrayList<blockrecord> ledger (String ledger) {
+		Type t = new TypeToken<ArrayList<blockrecord>>(){}.getType();
+		return new Gson().fromJson(ledger, t);
+	}
+
+   
+    // send unverified block to key
+    public static void sendmessage (blockrecord ub){
+        try {      	
+        	// create socket
+            Socket socket = new Socket(Blockchain.servername, port.KeyPort);
+            PrintStream ps = new PrintStream(socket.getOutputStream());
+            // start all processors
+            if (ub == null) {
+            blockrecord br = new blockrecord();
+           	// head
+           	br.setBlockID("0");
+           	br.setprocess(Integer.toString(Blockchain.PID));
+           	// sign record to key
+            ps.println(modifyrecord(br));
+            // clear flush
+            ps.flush();
+            }
+            else {
+            	// sign record to key
+                ps.println(modifyrecord(ub));
+                // clear flush
+                ps.flush();
+            }
+            // close socket
+            ps.close();
+            socket.close();
+        } catch (IOException x) {
+        	Blockchain.errorprinter("Error!", x);
+        }
+    }
+
+    
+    // send public key to Key
+    public static void sendkey(int[] advKport) {
+    	// send key to processor
+        for (int i = 0; i < advKport.length; i++) {
+            try {
+            	// set up socket
+                Socket socket = new Socket(Blockchain.servername, advKport[i]);
+                // pass message to server
+                ObjectOutputStream output = new ObjectOutputStream(socket.getOutputStream());
+                output.writeObject(Key.Getpublickey());
+                // clear flush, close socket
+                System.out.flush();
+                output.close();
+                socket.close();
+            }
+            catch (IOException x) {
+                Blockchain.errorprinter("Error!", x);
+                return;
+            }
+        }
+    }
+
+    
+    // set up hash and get value
+    public static byte[] usehash(String usehash) {
+        try {
+            MessageDigest message = MessageDigest.getInstance("SHA-256");
+            // get value
+            return message.digest(usehash.getBytes("UTF-8"));
+        }
+        catch (Exception x){
+            Blockchain.errorprinter("Error!", x);
+            return null;
+        }
+    }
+}
+
+
+class ubcthread implements Runnable {
+    public void run() {
+    	blockrecord br;
+    	try {
+        	// forever true
+            while (true) {
+            	// initialize with false
+                boolean problem = false;
+                // blockrecord in queue
+                br = Blockchain.brq.take();
+                Blockchain.portname("Unverified Block Updated with New Unverified Block: " + Tools.modifyrecord(br));
+
+                for (blockrecord ledger : Blockchain.blockledger) {
+                	// see whether there is block
+                    if (ledger.getBlockID().compareToIgnoreCase(br.getBlockID()) == 0) {
+                        problem = true;
+                        break;
+                    }
+                }
+                if (!checkVB(br)) {continue;}
+
+                try {
+                    // Set up block num
+                    int currblocknum = Blockchain.blockledger.size() + 1;
+                    br.setblocknum(currblocknum);
+                    // Set up VPID
+                    br.setprocess(Integer.toString(Blockchain.PID));
+
+                    String prevhash;
+
+                    // set up prevhash from block
+                    if (Blockchain.blockledger.size() != 0 && !br.getBlockID().equals("0") ) {
+                        int prevblocknum = Blockchain.blockledger.size() - 1;
+                        // value of prevhash
+                        prevhash = Blockchain.blockledger.get(prevblocknum).getprevhash();
+                    }
+                    else{
+                        prevhash = DatatypeConverter.printHexBinary(Tools.usehash(br.usehashedSHA256data()));
+                    }
+
+                    for (int i = 1; i < 200; i++) {
+                        // create random string of number and add to block
+                        String rs = this.randnum(15);
+                        // connection
+                        String connection = rs + prevhash;
+                        // set up hash
+                        String setuphash = DatatypeConverter.printHexBinary(Tools.usehash(connection));
+
+                        if (this.judgeanswer(setuphash)) {
+                            // update seed
+                            br.setseed(rs);
+                            // update new hash
+                            br.setprevhash(connection);
+                            break;
+                        }
+                        // for loop ledger
+                        for (blockrecord ledger : Blockchain.blockledger) {
+                        	// whether there is a block
+                            if (ledger.getBlockID().compareToIgnoreCase(br.getBlockID()) == 0) {
+                                problem = true;
+                                break;
+                            }
+                        }
+                        if (problem) {break;}	// break when necessarily
+                    }
+                } catch (Exception x) {
+                    Blockchain.errorprinter("Error!", x);
+                }
+                if (!problem){	// if there is a block
+                    for (blockrecord ledger : Blockchain.blockledger) {
+                        if (ledger.getBlockID().compareToIgnoreCase(br.getBlockID()) == 0) {
+                            problem = true;
+                            break;
+                        }
+                    }
+                    if (!problem) {	// add new record
+                        Blockchain.blockledger.add(br);
+                        this.sendVB();
+                    }
+                }
+            }
+        } catch (Exception x) {
+            Blockchain.errorprinter("Error!", x);
+        }
+    }
+
+ 
+    // judge whether deal with the puzzle
+    public boolean judgeanswer(String ja) {
+        try {
+            // pick up 16 bits from hash and transfer to unsigned
+            int workload = Integer.parseInt(ja.substring(0, 4), 16);
+            if (workload < 5000) {
+            	Blockchain.portname("Puzzle anwswer: " + workload);
+            	return true;
+            }
+        }
+        catch (IndexOutOfBoundsException x) {
+            Blockchain.errorprinter("Error!", x);
+            return false;
+        }
+        return false;
+    }
+
+    // create random numeric string
+    private String randnum(int randnum) {
+    	// initialize
+        String alphanum = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        // constructor
+        StringBuilder build = new StringBuilder();
+        // force seed to 0
+        while (randnum-- != 0) {
+            // char index
+            // count = 0
+            int ch = (int)(Math.random() * alphanum.length());
+            build.append(alphanum.charAt(ch));
+        }
+        // convert to string
+        return build.toString();
+    }
+
+    // update ledger
+    public void sendVB(){
+        PrintStream ps;
+        Socket socket;
+        try {
+            // new block
+            int[] advBCport = port.getbcspInUse();
+            for (int i = 0; i < advBCport.length; i++) {
+                // pass processor
+                socket = new Socket(Blockchain.servername, advBCport[i]);
+                ps = new PrintStream(socket.getOutputStream());
+                ps.println(Tools.modifyrecord(Blockchain.blockledger));
+                // clear flush
+                ps.flush();
+                ps.close();
+                socket.close();
+            }
+        }
+        catch (IOException x) {
+            Blockchain.errorprinter("Error!", x);
+        }
+    }
+
+    // check signed BID, prevhash and data
+    private boolean checkVB(blockrecord br) {
+        // verify signed BID
+        try {
+            byte[] signBID = Base64.getDecoder().decode(br.getsignBID());
+            // check signed blockID
+            if (!Tools.getkey().verifySig(br.getBlockID().getBytes(), signBID)) {return false;}
+        }
+        catch (IllegalArgumentException x){
+            Blockchain.errorprinter("Error!", x);
+            return false;
+        }
+
+        // verify signed data
+        try {
+            byte[] VSD = Base64.getDecoder().decode(br.getsignedSHA256data());
+            // check signed data ID
+            if (!Tools.getkey().verifySig(br.usehashedSHA256data().getBytes(), VSD)) {return false;}
+        }
+        catch (IllegalArgumentException x) {
+            Blockchain.errorprinter("Error!", x);
+            return false;
+        }
+        return true;
+    }
+}
+
+
+// set up key if doesn't exist public key
+class PK extends Thread {
+	// set up socket
+    public Socket socket;
+    PK(Socket socket) {this.socket = socket;}
+
+    public void run() {
+        // make sure it is process 2
+        if (Blockchain.PID == 2) {return;}
+        try {
+            // set up channel
+        	ObjectInputStream input = new ObjectInputStream(this.socket.getInputStream());
+        	
+            // local variable publickey
+        	PublicKey publickey = (PublicKey) input.readObject();
+        	    if (Tools.getkey() == null) {
+                Tools.setkey(new Key(publickey));
+            }
+            // close
+            input.close();
+            this.socket.close();
+        }
+        catch (Exception x) {
+        	Blockchain.errorprinter("Error!", x);
+        } 
+    }
+}
+
+// sign with secret key
+class KeyHelper extends Thread {
+    public Socket socket;
+    public Key Key;
+    // constructor
+    KeyHelper(Socket socket, Key Key){
+        this.socket = socket;
+        this.Key = Key;
+    }
+    public void run() {
+        try {
+            // buffer reader input content
+        	BufferedReader input = new BufferedReader(new InputStreamReader(this.socket.getInputStream()));
+        	// initialize local variable
+           	String before = "";
+           	String after;
+            while ((after = input.readLine()) != null) {
+            	before += after;
+            }
+            // sign string and BID into new block with private key, pass to unverified block processor
+            blockrecord brcontent = Tools.remodifyrecord(before);
+            // create new hash for data
+           	byte[] blockhash = Tools.usehash(Tools.modifydata(brcontent.getdata()));
+           	StringBuffer buffer = new StringBuffer();
+            for (int i = 0; i < blockhash.length; i++) {
+            	buffer.append(Integer.toString((blockhash[i] & 0xff) + 0x100, 16).substring(1));
+            }
+            // transfer to string
+            String SHA256string = buffer.toString();
+            brcontent.sethashedSHA256data(SHA256string);
+            // sign data and base and encoding
+           	byte[] sigBlock = this.Key.signbyte(brcontent.usehashedSHA256data().getBytes("UTF-8"));
+            brcontent.setsignedSHA256data(Base64.getEncoder().encodeToString(sigBlock));
+            // sign block ID and encoding
+            byte[] signBID = this.Key.signbyte(brcontent.getBlockID().getBytes("UTF-8"));
+            brcontent.setsignBID(Base64.getEncoder().encodeToString(signBID));
+            // set up array
+         	int[] UBP = port.getubspInUse();
+         	// for loop for array
+         	for (int i = 0; i < UBP.length; i++) {
+         		// BlockID = 0 means it is passing to dummy block
+         		if(brcontent.getBlockID().equals("0")) {
+         			Blockchain.portname("Pass dummy block to processor" + i);
+         		}
+                else {
+                	Blockchain.portname("Pass unverified block to processor " + i);
+            	}
+         		// set up socket UB serversocket
+         		Socket UBserversocket = new Socket(Blockchain.servername, UBP[i]);
+         		// output
+         		PrintStream output = new PrintStream(UBserversocket.getOutputStream());
+                output.println(Tools.modifyrecord(brcontent));
+                // clear flush
+                output.flush();
+                // close channel and socket
+               	output.close();
+               	UBserversocket.close();
+               	this.socket.close();
+               	input.close();
+                }
+            }
+            catch (IOException x) {
+                Blockchain.errorprinter("Error!", x);
+            }
+        }
+    }
+
+// blockchain
+class BC extends Thread {
+	// constructor
+    public Socket socket;
+    public static final Lock Lock = new ReentrantLock();
+    BC(Socket socket) {this.socket = socket;}
+
+    public void run() {
+        try{
+        	// set up input buffer reader
+        	BufferedReader input = new BufferedReader(new InputStreamReader(this.socket.getInputStream()));
+        	// initialize local variable ledger
+            String ledger = "";
+            String afterledger = "";
+            // readlines if it is not null
+            while ((afterledger = input.readLine()) != null) {
+            	ledger += afterledger;
+            }
+            // pass to ledger
+            Blockchain.blockledger = Tools.ledger(ledger);
+            // if PID is 0, write json
+            if (Blockchain.PID == 0) {
+            	this.exportledger();
+            }
+            // close socket and channel
+            this.socket.close();
+            input.close();
+            }
+            catch (Exception x) {
+            	Blockchain.errorprinter("Error!", x);
+            }
+        }   
+
+    private void exportledger() {
+        try {
+            Lock.lock();
+            String tempblock = this.modifyrecord(Blockchain.blockledger);
+            Lock.unlock();
+            Blockchain.portname("ledger size: " + Blockchain.blockledger.size());
+            // set up buffer writer
+            BufferedWriter BW = new BufferedWriter(new FileWriter("BlockchainLedger.json", false));
+            // write buffer
+            BW.write(tempblock);
+            // clear flush
+            BW.flush();
+            // close buffer writer
+            BW.close();
+        }
+        catch (IOException x) {
+            Blockchain.errorprinter("Error!", x);
+        }
+    }
+
+    // set up block record
+    private String modifyrecord(ArrayList<blockrecord> blockrecord) {
+        Gson gson = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
+        return gson.toJson(blockrecord);
+    }
+}
+
+
+//class Blockchain
+public class Blockchain {
+public static final boolean checkbug = true;
+// block number is three
+public static final int processor = 3;
+// set up server name is localhost
+public static final String servername = "localhost";
+// set up queue for blockrecord
+public static final BlockingQueue<blockrecord> brq = new PriorityBlockingQueue<blockrecord>();
+// set up array list for blockledger
+public static ArrayList<blockrecord> blockledger = new ArrayList<blockrecord>();
+// initialize PID = 0
+public static int PID = 0;
+
+
+// main function body
+public static void main(String args[]) {
+	// set up string for reading insertion content
+   String insertion;
+   // set up processor for public keys. Also for blocks and blockchains
+   port.setport(processor);
+
+   // if user didn't mention PID, then it will be customized as 0
+   if (args.length == 0) {
+       System.out.println("Processor defaults setting to 0");
+   }
+   // else take args[0]
+   else {
+       PID = Integer.parseInt(args[0]);
+   }
+
+   // switch table for PID
+   switch (PID) {
+   	// case 1 is related to processor 1
+       case 1: {
+           insertion = "BlockInput1.txt";
+           break;
+       }
+       // case 2 is related to processor 2
+       case 2: {
+           insertion = "BlockInput2.txt";
+           // set up threadreader thread
+           new Thread(new threadreader()).start();
+           break;
+       }
+       // case default is related to processor 0
+       default: {
+           insertion = "BlockInput0.txt";
+           break;
+       }
+   }
+
+   // set port for processor 0, processor 1 and processor 2
+   port.settask(PID);
+
+   Blockchain.portname("Ports Start! ");
+   System.out.println("\t Public Keys Port: " + port.getksp());
+   System.out.println("\t Unverified Blocks Port: " + port.getubsp());
+   System.out.println("\t Blockchain Port: " + port.getbcsp());
+   Blockchain.portname("\n Insertion: " + insertion + "\n");
+
+   // call thread for publickey and unverifiedblock
+   try {
+   	new Thread(new ubcthread()).start();
+       new Thread(new pkthread(port.getksp())).start();
+       new Thread(new ubthread(port.getubsp())).start();
+       new Thread(new bcthread(port.getbcsp())).start();
+       
+       // sleep
+       while (Tools.getkey() == null) {
+           Thread.sleep(20);
+           }
+   } catch (Exception x) {
+       Blockchain.errorprinter("Error!", x);
+   }
+
+   // senario when PID = 2
+   if (PID == 2) {
+       Tools.sendmessage(null);
+   }
+
+   // unverified block to processor
+   ArrayList<blockrecord> rb = Tools.arrinput(insertion, PID);
+
+   for (blockrecord br : rb) {
+       Tools.sendmessage(br);
+   }
+}
+
+// declare process 0, process 1 and process 2
+public static void portname(String pn) {
+	if (PID == 0) {
+		System.out.println("Process 0" + Blockchain.PID + ": " + pn + "\n");		
+	}    	
+	if (PID == 1) {
+		System.out.println("Process 1" + Blockchain.PID + ": " + pn + "\n");		
+	}    	
+	if (PID == 2) {
+		System.out.println("Process 2" + Blockchain.PID + ": " + pn + "\n");		
+	}
+}
+
+// error printer
+public static void errorprinter(String pn, Exception x) {
+	if (PID == 0) {
+		System.out.println("Process 0" + Blockchain.PID + ": " + pn + "exception: " + x + "\n");		
+	}    	
+	if (PID == 1) {
+		System.out.println("Process 1" + Blockchain.PID + ": " + pn + "exception: " + x + "\n");		
+	}    	
+	if (PID == 2) {
+		System.out.println("Process 2" + Blockchain.PID + ": " + pn + "exception: " + x + "\n");		
+	}
+   x.printStackTrace();
+}
+}
+
+
+
+
+// Ximan Liu
+// BlockchainLog.txt
+
+
+
+// directory
+liuximandeMacBook-Air:~ liuximan$ cd /Users/liuximan/Desktop/Blockchain
+
+
+
+// java -cp ".:gson-2.8.2.jar" Blockchain 0
+
+Process 00: Ports Start!
+
+         Public Keys Port: 4710
+         Unverified Blocks Port: 4820
+         Blockchain Port: 4930
+Process 00:
+ Insertion: BlockInput0.txt
+
+
+4 blockrecord.
+Content names:
+        John Smith
+        Joe Blow
+        Julie Wilson
+        Wayne Blaine
+Process 00: ledger size: 3
+
+Process 00: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Abraham",
+    "LName": "Lincoln",
+    "SSNum": "444-45-6888",
+    "DOB": "1809.02.12",
+    "Diag": "GreviousWound",
+    "Treat": "Surgery",
+    "Rx": "Whiskey"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "d2212135baa8e42b6d1f5642ca990e73eb3f9ccd9839ad306cf37a6f0208e781",
+  "signedSHA256data": "GyqetR5GXugY6cRP7N2zntDa9C6omrpCH9KQusboLJBI5HiqQSc2m3N0UDdbA+yKMUyKbX1VOCBdHdpvrjUHAfxlhs6L6J5C1BoJfG3RnFUCPg/UeK9atgRJy22RasmdUEk1a5MR9QM0EGbuqRG2pr+1epAVokRV8UmOAvd+mXY=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "cc9be237-0b1e-4623-a6b1-cbfb1bb6d648",
+  "signBID": "aeVucUYNr00gDfgKhVexBhGE5XjKMyo0meh5lwbofHJGk3KPU7RyXb2s57oQGwJN4nizEiOjJMzgQi+3Hbl40qpZIXhuOEcEL3LgOMQMdbk6NuACB5kzI/wL6K3tu+G0o3DmVYbOKUyd1ie+mqobUBc1gZIuVNXczG4pA0HXC/w=",
+  "process": "2"
+}
+
+Process 00: ledger size: 1
+
+Process 00: ledger size: 2
+
+Process 00: ledger size: 4
+
+Process 00: ledger size: 4
+
+Process 00: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Helen",
+    "LName": "Keller",
+    "SSNum": "666-45-6789",
+    "DOB": "1880.06.27",
+    "Diag": "Arthritis",
+    "Treat": "WarmCloths",
+    "Rx": "Aspirin"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "34e4aa1a93fa49312a72597b9d7815df35f825e8f9aa6be0671f92500c8d4f3e",
+  "signedSHA256data": "M7BmnXJKLeJzO67rb21/1YIWk2Gh5z2+KvwCZpan5yu/Q2RBPWP2n0bIO22syLJG+g46qKNtqKlTafEEZbDE9ueCEzBgX+3u4EBFeWg6N8edQjpiydkhUdHv7G+6zz4Fjwk470jFm2X0R/+DV+xZdcWisi8n0Q1ghOD1AJEcXLs=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "c91d748b-da60-45f3-8e32-cbdc00314561",
+  "signBID": "DfJUJ527kWXqgey7abigca3vYBQAmWrvcED2q99WGN2mn3f+rh60jyF0BXdypuBb9LILgvUVXFSzeAbOj47IwFqW7TnCUUKPAdnSVFk8jIoOJNHoY1Mol/nIymYi852DW81PVwSIuqiAd/mPkO+BjmS7Djwd+QpBr5SC+QbWP0U=",
+  "process": "2"
+}
+
+Process 00: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Bruce",
+    "LName": "Lee",
+    "SSNum": "456-789-123",
+    "DOB": "1940.11.27",
+    "Diag": "SoreStomach",
+    "Treat": "LessCombat",
+    "Rx": "Vicodine"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "481a8967072a98dda49eade3ffd43403d5dd337f936543caa9c284e0d486668e",
+  "signedSHA256data": "JI8j1GE3OTRj49fcBIlYRnXCNizG7Q7hUSnJe0Ph+N/4w5vVY1j8uOr0g7PJYoZB2t6lIgt0uT5ngPKgAoRReKmFoinMVrsjqyMaqD4K1/el2aCdkSKnn/xTn0j86r2W3RZqGQFVSY2iwxp1+l/zFoe84TYFrSwINk791r7GKns=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "e570bf0a-6f72-4c84-b7e1-66152d63b143",
+  "signBID": "M69rnB0XirJXpSNdAihHS/WbQfICR7+iF8HbjCS0dR2wyBsEpx0enYyAKhfIzayEK1Jfz0N6nIPsnFnUnOgLEKBcF68Pr5jO4GKfR9rcNUL8lfOmJ+t3QH4OFQbbBO4RUjjgosTsHxE/W2mLJLLJ1sYKKjO6WDUxj2iOV8Npz8A=",
+  "process": "1"
+}
+
+Process 00: Puzzle anwswer: 4542
+
+Process 00: ledger size: 6
+
+Process 00: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Sally",
+    "LName": "McCutty",
+    "SSNum": "123-456-999",
+    "DOB": "1970.01.01",
+    "Diag": "Migraine",
+    "Treat": "IcePack",
+    "Rx": "Almotriptan"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "af09557f8c9645f2d377810fed5ca1bc1bf13182e3ba80e41c2b04a2e80b2b9c",
+  "signedSHA256data": "XD5ulrpp2XlvTfkAoRsnSvw8NUO6YVTuORIF5ArFt7Ny5AA8FMHsdzfIQZwcJH5hq+jjjR7NsxZtbhAQuCliMRdB1MP7vheofinnusb952B8dtIjwAwWM59I0rpM8InNfEvC62ui0BrdEFyu9vmxND62twGmPE0OaMLkyddQ1mU=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "f2351b44-3a83-4cf5-a326-30d4942d456b",
+  "signBID": "A679fogor0B6kW6l+bxk2yZ2i2ddGBfFletARH+0HQY5y1Srf9OBnFrz+baqb2km8Qs+bzrGD9WgeBmCJzDjkOcqRXlaleShBRG1U4f/59kVwqpufV7DteObj7KybvPCvZ3uOyWgpi1MS1T54+R1pmdC8h9rBgBWy8LnRQY33ww=",
+  "process": "1"
+}
+
+Process 00: ledger size: 6
+
+Process 00: Puzzle anwswer: 1675
+
+Process 00: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Joe",
+    "LName": "Blow",
+    "SSNum": "123-45-6888",
+    "DOB": "1996.03.07",
+    "Diag": "Smallpox",
+    "Treat": "BedRest",
+    "Rx": "Whiskey"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "7ec61b021a47a246670e1bd672a02a50421c6e30354fea16cc1c802579797208",
+  "signedSHA256data": "E07Dsy3tVU+m7chIMkBAyv1tdrZtwFmI/vsZyDM2Fb6DTCsI/5RN8Zzodq0IoDGYFGevczjJEoPzcf6lWArN928g3wElOXTM0C9EcXSPIZcY4CdDwAcD6PVpP/gdhUviUkTO3C9PAnzDkTe+D1+N2COf2Sw8uPIUL4tX/hD3C0o=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "50da1440-24b4-4b20-8e41-c7f867fb61bb",
+  "signBID": "bHoHIMPJX2jfIGl7zxhch26Aj/vmSZWviV479nrGSwbrOJK2hm4ssy37D33/FGJKGeJxchJWgE3fLF4QZCrHX6PXW4Z6lyv89EWZprCRNiqMbUVarZcg0G+HtLy511rBc59qfIp26RvVz/jr/Z+Tk7hi/GWsmvs86hPdYjOaqys=",
+  "process": "0"
+}
+
+Process 00: ledger size: 6
+
+Process 00: ledger size: 6
+
+Process 00: ledger size: 7
+
+Process 00: ledger size: 7
+
+Process 00: ledger size: 8
+
+Process 00: Puzzle anwswer: 3283
+
+Process 00: ledger size: 9
+
+Process 00: ledger size: 9
+
+Process 00: ledger size: 7
+
+Process 00: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Wayne",
+    "LName": "Blaine",
+    "SSNum": "123-45-6777",
+    "DOB": "1942.07.07",
+    "Diag": "Measles",
+    "Treat": "WaitToGetBetter",
+    "Rx": "CodLiverOil"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "d0fb5506544b95f8fde5513689befda3a50f3607c388444b1ff56c8297a6cd3e",
+  "signedSHA256data": "JjmekePt87BHBKUDC06SAhD16xde/xjvjjfSJu3TIKIrO2tq8IGjEjhAbDQqKg77mcNYSfBfHnynQOHyoIMSh8N3whdicbrdtEE6FSAKZ3scYd1ZgLNgBm8wissPVIGINFsDxIovxVy+n0fz5KwTaXdcTnitCWvvCVyeO+TgPTI=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "2f86235f-0dd2-4856-92a5-b57e5d9f0f0a",
+  "signBID": "U2cQUQK1LRUMsaC4ywuVuqbx39wsoQi1vhqeN9dVOXFx1rfHSL9/ej7japnOr076sssne3oo/Uyn4KR7uROoLPjg94ELxhCM+v/Mkwd5dz231Y5Vsln6i0dOOz6WNhfWZ48big0S1rNoTpvHGJEYf6LjsYekZoiLvF5HsAS2kds=",
+  "process": "0"
+}
+
+Process 00: ledger size: 10
+
+Process 00: ledger size: 10
+
+Process 00: ledger size: 10
+
+Process 00: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Wei",
+    "LName": "Xu",
+    "SSNum": "123-456-333",
+    "DOB": "1996.03.22",
+    "Diag": "Shingles",
+    "Treat": "WaitForRelief",
+    "Rx": "Zovirax"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "f6e44bdc21e4e27d07bcdb840b01f5de7bb9969d06e7abcef396a93155946f85",
+  "signedSHA256data": "PaIHrx9hd1fx0ZbDrZHgdQCHyPPG7eluNqbAcUSRy9J+N39BzNlMHZUOmo+8+HIUPvF3CfYyg/7uub0dAGGOVcVj2xN3q68BB7X7JyiUp2JS4wkz1+/2NwiIkQuQH8OVF0E5ytSU4u0OrljV1crtkpqgsn0PKdeTivXglCHOmfE=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "81ccc571-cced-4d92-bfc6-67a0d6c5601b",
+  "signBID": "GNm3x5sLfdVorpV8BwHegdY/uz8jSSQ4owFaZH1bf8BdII+yzRPReSO1sD+7VgCvXuppiml4RaH6eGWoof/1/1N0P4me+Z2r/JLox6mY22eu94aWSTJ82Y4fSGqLlb2438a5cgRdfdKNfqT9ZeQpeA5c/DawHvSCOmw6PF14r38=",
+  "process": "1"
+}
+
+Process 00: Puzzle anwswer: 2310
+
+Process 00: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Julie",
+    "LName": "Wilson",
+    "SSNum": "123-45-6999",
+    "DOB": "1996.03.07",
+    "Diag": "Insomnia",
+    "Treat": "Exercise",
+    "Rx": "HotPeppers"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "2a8bc57a3e49400b59cafd66693072cbb398db6c826fc814db5e814e0823de8b",
+  "signedSHA256data": "ZVLcMsJbPBYe5kFxJ/vbe3bBg5WZad/9pGuB3WVUFfx7z40F4e3IFMaKYVyrhHn5wrtGWdVHmf4DbSYY8OIveTyXDiNGuYrz5Z2JIY+huF7RXKCM7ZfuD4hVIw6EdQGUMma6UszpuKLc2ELSrehwSlKdOREOsmLA7qlrVO8ZPf4=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "44e65f86-a5f6-4cd8-a56b-4725bda9d978",
+  "signBID": "M3Z7JeGhd/CpznhcyhPnA0llq5E5vajKpnhHIFXONkFpXZV36DKZg5bgRWotgl8xq5xh7pnEJOF65x1XSyomcz+jwlrmPzJGMwd0ge4DJb8BdB1sShe49G00yhtBw5RIxlebuHiuVFcTaFTXN5AH0s+OfWTnQnWT5yDUiF1EnuE=",
+  "process": "0"
+}
+
+Process 00: ledger size: 11
+
+Process 00: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Rita",
+    "LName": "Vita",
+    "SSNum": "999-456-789",
+    "DOB": "1992.01.31",
+    "Diag": "ObessivePersonality",
+    "Treat": "TryToRelax",
+    "Rx": "Ibuprofen"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "6f97b2de4a68f1aa74e56be08a4006f9168f020de8fa2dd7d0dc6a3e2a79706b",
+  "signedSHA256data": "deRYLckdUlM3vYgYG7lyDBvFC1LHYOhFAqzuGbUh/ieth5YYLPnA/RJpEGmdIDd+AS92rbCWyYRSnTLTnOyAV+2l2WeR69nucaFf6gbIHd8JktrY4XnwQp2oJLiRh6Zb8zCFToplJLXZnxJkK7OL/tNSbNcIcLjSPUc8881tm+s=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "1baf6f72-aa49-4acb-a51c-dd892bbc65df",
+  "signBID": "GdALhUAy7lIY91i56PAdGDV3frAF2qUTDgXTUVffgYyoMi3VczsUftEr7AljQiuzISo9YOELzDIH1oy8nr4ucqmckhtjJL2gXnyYHDgjpEQlCJc1c8U0TUvmJCNLZVS0PIfL2YS9tPty65jn8gW+5J4v+qqudsSraoZq5M2I64c=",
+  "process": "1"
+}
+
+Process 00: ledger size: 11
+
+Process 00: Puzzle anwswer: 265
+
+Process 00: ledger size: 12
+
+Process 00: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "John",
+    "LName": "Kennedy",
+    "SSNum": "333-45-6999",
+    "DOB": "1917.05.29",
+    "Diag": "AddisonsDisease",
+    "Treat": "DrugTherapy",
+    "Rx": "Steroids"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "a34156f2b0279bd0f4328ff6026da126110072888a85b1c2ef4f71d5f6a5d059",
+  "signedSHA256data": "JNhEqt8n9WLx/JoLwkc69HtKk5KiM02OyRfn+mnJLO41gtjm4cU+7xZNuvUP3RwNzSK0VnDErZwtI+nOmes3/8Nr6FSqba/MGJdZDnloVITfS+NgAXuu+GWIukM+UTXdAY8oXmD6yvefo1uB89UYC7r/oH1KDv0kr86MoXccOno=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "f6eabe9c-8c19-4fe4-856f-5680b0355523",
+  "signBID": "FKKF+dLH5D2BZCxvL/u8QlL9UU7LApWpsKnWXhqp1/eUmOr8/AuaTjIxrlS3Lgv9Iiszjw7TRbg6xV1Rp9sIrLY7+EnYJwzg4uW+qYuSKN59hVYsHO3vKbhR4E6kIcqZoyF02w9vlPNqHysh3YvIC46vmlmYVHH+6dIJg7mPBn0=",
+  "process": "2"
+}
+
+Process 00: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "",
+    "LName": "",
+    "SSNum": "",
+    "DOB": "",
+    "Diag": "",
+    "Treat": "",
+    "Rx": ""
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "b6304f25212d6fbc9de76ec249bfa739e09eac5aac0b42d6178f79819ceb48f7",
+  "signedSHA256data": "QdOlNKaJG1gJfX6dhCev3G8X9fv1hc+6Wv4N46PekCE9AbpXgjbWQhcwcWaZD9+3oLxNPVp32BUgwDKbYFA+S4nuL1auvyr5XsGrOsY0G3LeD3ZUft4PDsmpndBLuVthgvcQ7V2bIDYiKBAW0uUYmVsMXNOTrt8yyVCwI8ELHlQ=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "0",
+  "signBID": "MasMlS3rKupjqhvH93fkQW2UjwbN5vZMZsIKjTVij0EAky8V9LA+ZL5BK5VNmXKAAAV9QrEsg0Os78Yl04TH7qvu8FDU6kXmHk3Dl6OtcVO+IIcKGExVBky+C93Jwr8bGrO8Yu1hb6kaUgDWsLosXLa+VGdIy9hOMdXjRm2VWUc=",
+  "process": "2"
+}
+
+Process 00: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "John",
+    "LName": "Smith",
+    "SSNum": "123-45-6789",
+    "DOB": "1996.03.07",
+    "Diag": "Chickenpox",
+    "Treat": "BedRest",
+    "Rx": "aspirin"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "1dec499abb690787619ce898caf8411de3f718a25eaaa9a948467de61712fa8e",
+  "signedSHA256data": "WUDWqb/BAtSBQ8XFiQ+es4qPJvqyI/oOjWFlfyJJnfzP21Fni2Y+LB9Y2CBctOVPq/muu0hlElcO6Ei2yw2rI0N4Yh1sSj/uxpfJLZL1vJQMJMDsK2f9XWzWCYypznr1zo20vCixdLnQX9GQtixvXbzMzavSxL3ejICZX7fkTGQ=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "05551304-633b-46db-bfba-b0f96e0e3713",
+  "signBID": "FTCcBMguwWW4rOyUggZ7IPfmXm8EyvETzNKJNB7awtnKe7u9tV5unw2S5oAoJGFeEu5WV7ZoCYE9KTiXyX03w8T/w+u48c2z0VlgQT7yvmRHuibpwVNmAfsGwbE+aelMCCqjZYgTeUVPN32+tuQhUnr+ziGE1ytodsO/QmsCzJE=",
+  "process": "0"
+}
+
+Process 00: Puzzle anwswer: 3278
+
+Process 00: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Joe",
+    "LName": "DiMaggio",
+    "SSNum": "111-22-3333",
+    "DOB": "1914.11.25",
+    "Diag": "SoreKnees",
+    "Treat": "RestFromSports",
+    "Rx": "Aspirin"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "1429f2d9c63e18e85b86bfb8920db5fd811338f26d2b7349f201857983bc0472",
+  "signedSHA256data": "eqI186strxsJnp/Q6AEkWJrC/2zxrv5dE3mdGq0cS/Nwx7iowu4HnnMPi6+BSec1909Cgl1aUEmIDDdm+EeAO1CXf1pt182MF611Gi8bLDZL3PeuCYZAyrUBOWGF/Wi9XRkQS6kWDZ+jGz2HBPLyerru16JDD+Omie2tzWll7l8=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "ecb3db42-dad1-416b-823c-73d822379485",
+  "signBID": "KdzRzX1QkCvvbrOKTN2v7qiCCd8v+g1JMvj4GuMJTVF8qdWTy/ugJPzEM4NQGhBdvLcWxUPMGd40S0NYcsYNPbgc+C02CNJ4s7wt3VCQtucAlLHzbC5jk07S9h7eDywA4sLYqV1/IqgAyg+IevvYBNngs5STDgCnoQQ4CWGmuiI=",
+  "process": "2"
+}
+
+Process 00: ledger size: 13
+
+
+
+// java -cp ".:gson-2.8.2.jar" Blockchain 1
+
+Process 11: Ports Start!
+
+         Public Keys Port: 4711
+         Unverified Blocks Port: 4821
+         Blockchain Port: 4931
+Process 11:
+ Insertion: BlockInput1.txt
+
+
+4 blockrecord.
+Content names:
+        Rita Vita
+        Wei Xu
+        Sally McCutty
+        Bruce Lee
+Process 11: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Helen",
+    "LName": "Keller",
+    "SSNum": "666-45-6789",
+    "DOB": "1880.06.27",
+    "Diag": "Arthritis",
+    "Treat": "WarmCloths",
+    "Rx": "Aspirin"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "34e4aa1a93fa49312a72597b9d7815df35f825e8f9aa6be0671f92500c8d4f3e",
+  "signedSHA256data": "M7BmnXJKLeJzO67rb21/1YIWk2Gh5z2+KvwCZpan5yu/Q2RBPWP2n0bIO22syLJG+g46qKNtqKlTafEEZbDE9ueCEzBgX+3u4EBFeWg6N8edQjpiydkhUdHv7G+6zz4Fjwk470jFm2X0R/+DV+xZdcWisi8n0Q1ghOD1AJEcXLs=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "c91d748b-da60-45f3-8e32-cbdc00314561",
+  "signBID": "DfJUJ527kWXqgey7abigca3vYBQAmWrvcED2q99WGN2mn3f+rh60jyF0BXdypuBb9LILgvUVXFSzeAbOj47IwFqW7TnCUUKPAdnSVFk8jIoOJNHoY1Mol/nIymYi852DW81PVwSIuqiAd/mPkO+BjmS7Djwd+QpBr5SC+QbWP0U=",
+  "process": "2"
+}
+
+Process 11: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "John",
+    "LName": "Kennedy",
+    "SSNum": "333-45-6999",
+    "DOB": "1917.05.29",
+    "Diag": "AddisonsDisease",
+    "Treat": "DrugTherapy",
+    "Rx": "Steroids"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "a34156f2b0279bd0f4328ff6026da126110072888a85b1c2ef4f71d5f6a5d059",
+  "signedSHA256data": "JNhEqt8n9WLx/JoLwkc69HtKk5KiM02OyRfn+mnJLO41gtjm4cU+7xZNuvUP3RwNzSK0VnDErZwtI+nOmes3/8Nr6FSqba/MGJdZDnloVITfS+NgAXuu+GWIukM+UTXdAY8oXmD6yvefo1uB89UYC7r/oH1KDv0kr86MoXccOno=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "f6eabe9c-8c19-4fe4-856f-5680b0355523",
+  "signBID": "FKKF+dLH5D2BZCxvL/u8QlL9UU7LApWpsKnWXhqp1/eUmOr8/AuaTjIxrlS3Lgv9Iiszjw7TRbg6xV1Rp9sIrLY7+EnYJwzg4uW+qYuSKN59hVYsHO3vKbhR4E6kIcqZoyF02w9vlPNqHysh3YvIC46vmlmYVHH+6dIJg7mPBn0=",
+  "process": "2"
+}
+
+Process 11: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Bruce",
+    "LName": "Lee",
+    "SSNum": "456-789-123",
+    "DOB": "1940.11.27",
+    "Diag": "SoreStomach",
+    "Treat": "LessCombat",
+    "Rx": "Vicodine"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "481a8967072a98dda49eade3ffd43403d5dd337f936543caa9c284e0d486668e",
+  "signedSHA256data": "JI8j1GE3OTRj49fcBIlYRnXCNizG7Q7hUSnJe0Ph+N/4w5vVY1j8uOr0g7PJYoZB2t6lIgt0uT5ngPKgAoRReKmFoinMVrsjqyMaqD4K1/el2aCdkSKnn/xTn0j86r2W3RZqGQFVSY2iwxp1+l/zFoe84TYFrSwINk791r7GKns=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "e570bf0a-6f72-4c84-b7e1-66152d63b143",
+  "signBID": "M69rnB0XirJXpSNdAihHS/WbQfICR7+iF8HbjCS0dR2wyBsEpx0enYyAKhfIzayEK1Jfz0N6nIPsnFnUnOgLEKBcF68Pr5jO4GKfR9rcNUL8lfOmJ+t3QH4OFQbbBO4RUjjgosTsHxE/W2mLJLLJ1sYKKjO6WDUxj2iOV8Npz8A=",
+  "process": "1"
+}
+
+Process 11: Puzzle anwswer: 2149
+
+Process 11: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "John",
+    "LName": "Smith",
+    "SSNum": "123-45-6789",
+    "DOB": "1996.03.07",
+    "Diag": "Chickenpox",
+    "Treat": "BedRest",
+    "Rx": "aspirin"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "1dec499abb690787619ce898caf8411de3f718a25eaaa9a948467de61712fa8e",
+  "signedSHA256data": "WUDWqb/BAtSBQ8XFiQ+es4qPJvqyI/oOjWFlfyJJnfzP21Fni2Y+LB9Y2CBctOVPq/muu0hlElcO6Ei2yw2rI0N4Yh1sSj/uxpfJLZL1vJQMJMDsK2f9XWzWCYypznr1zo20vCixdLnQX9GQtixvXbzMzavSxL3ejICZX7fkTGQ=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "05551304-633b-46db-bfba-b0f96e0e3713",
+  "signBID": "FTCcBMguwWW4rOyUggZ7IPfmXm8EyvETzNKJNB7awtnKe7u9tV5unw2S5oAoJGFeEu5WV7ZoCYE9KTiXyX03w8T/w+u48c2z0VlgQT7yvmRHuibpwVNmAfsGwbE+aelMCCqjZYgTeUVPN32+tuQhUnr+ziGE1ytodsO/QmsCzJE=",
+  "process": "0"
+}
+
+Process 11: Puzzle anwswer: 2865
+
+Process 11: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Joe",
+    "LName": "Blow",
+    "SSNum": "123-45-6888",
+    "DOB": "1996.03.07",
+    "Diag": "Smallpox",
+    "Treat": "BedRest",
+    "Rx": "Whiskey"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "7ec61b021a47a246670e1bd672a02a50421c6e30354fea16cc1c802579797208",
+  "signedSHA256data": "E07Dsy3tVU+m7chIMkBAyv1tdrZtwFmI/vsZyDM2Fb6DTCsI/5RN8Zzodq0IoDGYFGevczjJEoPzcf6lWArN928g3wElOXTM0C9EcXSPIZcY4CdDwAcD6PVpP/gdhUviUkTO3C9PAnzDkTe+D1+N2COf2Sw8uPIUL4tX/hD3C0o=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "50da1440-24b4-4b20-8e41-c7f867fb61bb",
+  "signBID": "bHoHIMPJX2jfIGl7zxhch26Aj/vmSZWviV479nrGSwbrOJK2hm4ssy37D33/FGJKGeJxchJWgE3fLF4QZCrHX6PXW4Z6lyv89EWZprCRNiqMbUVarZcg0G+HtLy511rBc59qfIp26RvVz/jr/Z+Tk7hi/GWsmvs86hPdYjOaqys=",
+  "process": "0"
+}
+
+Process 11: Puzzle anwswer: 696
+
+Process 11: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Sally",
+    "LName": "McCutty",
+    "SSNum": "123-456-999",
+    "DOB": "1970.01.01",
+    "Diag": "Migraine",
+    "Treat": "IcePack",
+    "Rx": "Almotriptan"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "af09557f8c9645f2d377810fed5ca1bc1bf13182e3ba80e41c2b04a2e80b2b9c",
+  "signedSHA256data": "XD5ulrpp2XlvTfkAoRsnSvw8NUO6YVTuORIF5ArFt7Ny5AA8FMHsdzfIQZwcJH5hq+jjjR7NsxZtbhAQuCliMRdB1MP7vheofinnusb952B8dtIjwAwWM59I0rpM8InNfEvC62ui0BrdEFyu9vmxND62twGmPE0OaMLkyddQ1mU=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "f2351b44-3a83-4cf5-a326-30d4942d456b",
+  "signBID": "A679fogor0B6kW6l+bxk2yZ2i2ddGBfFletARH+0HQY5y1Srf9OBnFrz+baqb2km8Qs+bzrGD9WgeBmCJzDjkOcqRXlaleShBRG1U4f/59kVwqpufV7DteObj7KybvPCvZ3uOyWgpi1MS1T54+R1pmdC8h9rBgBWy8LnRQY33ww=",
+  "process": "1"
+}
+
+Process 11: Puzzle anwswer: 1066
+
+Process 11: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Wayne",
+    "LName": "Blaine",
+    "SSNum": "123-45-6777",
+    "DOB": "1942.07.07",
+    "Diag": "Measles",
+    "Treat": "WaitToGetBetter",
+    "Rx": "CodLiverOil"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "d0fb5506544b95f8fde5513689befda3a50f3607c388444b1ff56c8297a6cd3e",
+  "signedSHA256data": "JjmekePt87BHBKUDC06SAhD16xde/xjvjjfSJu3TIKIrO2tq8IGjEjhAbDQqKg77mcNYSfBfHnynQOHyoIMSh8N3whdicbrdtEE6FSAKZ3scYd1ZgLNgBm8wissPVIGINFsDxIovxVy+n0fz5KwTaXdcTnitCWvvCVyeO+TgPTI=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "2f86235f-0dd2-4856-92a5-b57e5d9f0f0a",
+  "signBID": "U2cQUQK1LRUMsaC4ywuVuqbx39wsoQi1vhqeN9dVOXFx1rfHSL9/ej7japnOr076sssne3oo/Uyn4KR7uROoLPjg94ELxhCM+v/Mkwd5dz231Y5Vsln6i0dOOz6WNhfWZ48big0S1rNoTpvHGJEYf6LjsYekZoiLvF5HsAS2kds=",
+  "process": "0"
+}
+
+Process 11: Puzzle anwswer: 130
+
+Process 11: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Julie",
+    "LName": "Wilson",
+    "SSNum": "123-45-6999",
+    "DOB": "1996.03.07",
+    "Diag": "Insomnia",
+    "Treat": "Exercise",
+    "Rx": "HotPeppers"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "2a8bc57a3e49400b59cafd66693072cbb398db6c826fc814db5e814e0823de8b",
+  "signedSHA256data": "ZVLcMsJbPBYe5kFxJ/vbe3bBg5WZad/9pGuB3WVUFfx7z40F4e3IFMaKYVyrhHn5wrtGWdVHmf4DbSYY8OIveTyXDiNGuYrz5Z2JIY+huF7RXKCM7ZfuD4hVIw6EdQGUMma6UszpuKLc2ELSrehwSlKdOREOsmLA7qlrVO8ZPf4=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "44e65f86-a5f6-4cd8-a56b-4725bda9d978",
+  "signBID": "M3Z7JeGhd/CpznhcyhPnA0llq5E5vajKpnhHIFXONkFpXZV36DKZg5bgRWotgl8xq5xh7pnEJOF65x1XSyomcz+jwlrmPzJGMwd0ge4DJb8BdB1sShe49G00yhtBw5RIxlebuHiuVFcTaFTXN5AH0s+OfWTnQnWT5yDUiF1EnuE=",
+  "process": "0"
+}
+
+Process 11: Puzzle anwswer: 369
+
+Process 11: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Wei",
+    "LName": "Xu",
+    "SSNum": "123-456-333",
+    "DOB": "1996.03.22",
+    "Diag": "Shingles",
+    "Treat": "WaitForRelief",
+    "Rx": "Zovirax"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "f6e44bdc21e4e27d07bcdb840b01f5de7bb9969d06e7abcef396a93155946f85",
+  "signedSHA256data": "PaIHrx9hd1fx0ZbDrZHgdQCHyPPG7eluNqbAcUSRy9J+N39BzNlMHZUOmo+8+HIUPvF3CfYyg/7uub0dAGGOVcVj2xN3q68BB7X7JyiUp2JS4wkz1+/2NwiIkQuQH8OVF0E5ytSU4u0OrljV1crtkpqgsn0PKdeTivXglCHOmfE=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "81ccc571-cced-4d92-bfc6-67a0d6c5601b",
+  "signBID": "GNm3x5sLfdVorpV8BwHegdY/uz8jSSQ4owFaZH1bf8BdII+yzRPReSO1sD+7VgCvXuppiml4RaH6eGWoof/1/1N0P4me+Z2r/JLox6mY22eu94aWSTJ82Y4fSGqLlb2438a5cgRdfdKNfqT9ZeQpeA5c/DawHvSCOmw6PF14r38=",
+  "process": "1"
+}
+
+Process 11: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Rita",
+    "LName": "Vita",
+    "SSNum": "999-456-789",
+    "DOB": "1992.01.31",
+    "Diag": "ObessivePersonality",
+    "Treat": "TryToRelax",
+    "Rx": "Ibuprofen"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "6f97b2de4a68f1aa74e56be08a4006f9168f020de8fa2dd7d0dc6a3e2a79706b",
+  "signedSHA256data": "deRYLckdUlM3vYgYG7lyDBvFC1LHYOhFAqzuGbUh/ieth5YYLPnA/RJpEGmdIDd+AS92rbCWyYRSnTLTnOyAV+2l2WeR69nucaFf6gbIHd8JktrY4XnwQp2oJLiRh6Zb8zCFToplJLXZnxJkK7OL/tNSbNcIcLjSPUc8881tm+s=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "1baf6f72-aa49-4acb-a51c-dd892bbc65df",
+  "signBID": "GdALhUAy7lIY91i56PAdGDV3frAF2qUTDgXTUVffgYyoMi3VczsUftEr7AljQiuzISo9YOELzDIH1oy8nr4ucqmckhtjJL2gXnyYHDgjpEQlCJc1c8U0TUvmJCNLZVS0PIfL2YS9tPty65jn8gW+5J4v+qqudsSraoZq5M2I64c=",
+  "process": "1"
+}
+
+Process 11: Puzzle anwswer: 4735
+
+Process 11: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Joe",
+    "LName": "DiMaggio",
+    "SSNum": "111-22-3333",
+    "DOB": "1914.11.25",
+    "Diag": "SoreKnees",
+    "Treat": "RestFromSports",
+    "Rx": "Aspirin"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "1429f2d9c63e18e85b86bfb8920db5fd811338f26d2b7349f201857983bc0472",
+  "signedSHA256data": "eqI186strxsJnp/Q6AEkWJrC/2zxrv5dE3mdGq0cS/Nwx7iowu4HnnMPi6+BSec1909Cgl1aUEmIDDdm+EeAO1CXf1pt182MF611Gi8bLDZL3PeuCYZAyrUBOWGF/Wi9XRkQS6kWDZ+jGz2HBPLyerru16JDD+Omie2tzWll7l8=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "ecb3db42-dad1-416b-823c-73d822379485",
+  "signBID": "KdzRzX1QkCvvbrOKTN2v7qiCCd8v+g1JMvj4GuMJTVF8qdWTy/ugJPzEM4NQGhBdvLcWxUPMGd40S0NYcsYNPbgc+C02CNJ4s7wt3VCQtucAlLHzbC5jk07S9h7eDywA4sLYqV1/IqgAyg+IevvYBNngs5STDgCnoQQ4CWGmuiI=",
+  "process": "2"
+}
+
+Process 11: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "",
+    "LName": "",
+    "SSNum": "",
+    "DOB": "",
+    "Diag": "",
+    "Treat": "",
+    "Rx": ""
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "b6304f25212d6fbc9de76ec249bfa739e09eac5aac0b42d6178f79819ceb48f7",
+  "signedSHA256data": "QdOlNKaJG1gJfX6dhCev3G8X9fv1hc+6Wv4N46PekCE9AbpXgjbWQhcwcWaZD9+3oLxNPVp32BUgwDKbYFA+S4nuL1auvyr5XsGrOsY0G3LeD3ZUft4PDsmpndBLuVthgvcQ7V2bIDYiKBAW0uUYmVsMXNOTrt8yyVCwI8ELHlQ=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "0",
+  "signBID": "MasMlS3rKupjqhvH93fkQW2UjwbN5vZMZsIKjTVij0EAky8V9LA+ZL5BK5VNmXKAAAV9QrEsg0Os78Yl04TH7qvu8FDU6kXmHk3Dl6OtcVO+IIcKGExVBky+C93Jwr8bGrO8Yu1hb6kaUgDWsLosXLa+VGdIy9hOMdXjRm2VWUc=",
+  "process": "2"
+}
+
+Process 11: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Abraham",
+    "LName": "Lincoln",
+    "SSNum": "444-45-6888",
+    "DOB": "1809.02.12",
+    "Diag": "GreviousWound",
+    "Treat": "Surgery",
+    "Rx": "Whiskey"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "d2212135baa8e42b6d1f5642ca990e73eb3f9ccd9839ad306cf37a6f0208e781",
+  "signedSHA256data": "GyqetR5GXugY6cRP7N2zntDa9C6omrpCH9KQusboLJBI5HiqQSc2m3N0UDdbA+yKMUyKbX1VOCBdHdpvrjUHAfxlhs6L6J5C1BoJfG3RnFUCPg/UeK9atgRJy22RasmdUEk1a5MR9QM0EGbuqRG2pr+1epAVokRV8UmOAvd+mXY=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "cc9be237-0b1e-4623-a6b1-cbfb1bb6d648",
+  "signBID": "aeVucUYNr00gDfgKhVexBhGE5XjKMyo0meh5lwbofHJGk3KPU7RyXb2s57oQGwJN4nizEiOjJMzgQi+3Hbl40qpZIXhuOEcEL3LgOMQMdbk6NuACB5kzI/wL6K3tu+G0o3DmVYbOKUyd1ie+mqobUBc1gZIuVNXczG4pA0HXC/w=",
+  "process": "2"
+}
+
+
+
+// java -cp ".:gson-2.8.2.jar" Blockchain 2
+
+Process 22: Ports Start!
+
+         Public Keys Port: 4712
+         Unverified Blocks Port: 4822
+         Blockchain Port: 4932
+Process 22:
+ Insertion: BlockInput2.txt
+
+
+4 blockrecord.
+Content names:
+        Helen Keller
+        Abraham Lincoln
+        John Kennedy
+        Joe DiMaggio
+Process 22: Pass dummy block to processor0
+
+Process 22: Pass dummy block to processor1
+
+Process 22: Pass unverified block to processor 0
+
+Process 22: Pass unverified block to processor 0
+
+Process 22: Pass unverified block to processor 1
+
+Process 22: Pass unverified block to processor 0
+
+Process 22: Pass unverified block to processor 0
+
+Process 22: Pass unverified block to processor 1
+
+Process 22: Pass dummy block to processor2
+
+Process 22: Pass unverified block to processor 2
+
+Process 22: Pass unverified block to processor 1
+
+Process 22: Pass unverified block to processor 1
+
+Process 22: Pass unverified block to processor 2
+
+Process 22: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Helen",
+    "LName": "Keller",
+    "SSNum": "666-45-6789",
+    "DOB": "1880.06.27",
+    "Diag": "Arthritis",
+    "Treat": "WarmCloths",
+    "Rx": "Aspirin"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "34e4aa1a93fa49312a72597b9d7815df35f825e8f9aa6be0671f92500c8d4f3e",
+  "signedSHA256data": "M7BmnXJKLeJzO67rb21/1YIWk2Gh5z2+KvwCZpan5yu/Q2RBPWP2n0bIO22syLJG+g46qKNtqKlTafEEZbDE9ueCEzBgX+3u4EBFeWg6N8edQjpiydkhUdHv7G+6zz4Fjwk470jFm2X0R/+DV+xZdcWisi8n0Q1ghOD1AJEcXLs=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "c91d748b-da60-45f3-8e32-cbdc00314561",
+  "signBID": "DfJUJ527kWXqgey7abigca3vYBQAmWrvcED2q99WGN2mn3f+rh60jyF0BXdypuBb9LILgvUVXFSzeAbOj47IwFqW7TnCUUKPAdnSVFk8jIoOJNHoY1Mol/nIymYi852DW81PVwSIuqiAd/mPkO+BjmS7Djwd+QpBr5SC+QbWP0U=",
+  "process": "2"
+}
+
+Process 22: Pass unverified block to processor 2
+
+Process 22: Pass unverified block to processor 2
+
+Process 22: Puzzle anwswer: 4113
+
+Process 22: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "",
+    "LName": "",
+    "SSNum": "",
+    "DOB": "",
+    "Diag": "",
+    "Treat": "",
+    "Rx": ""
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "b6304f25212d6fbc9de76ec249bfa739e09eac5aac0b42d6178f79819ceb48f7",
+  "signedSHA256data": "QdOlNKaJG1gJfX6dhCev3G8X9fv1hc+6Wv4N46PekCE9AbpXgjbWQhcwcWaZD9+3oLxNPVp32BUgwDKbYFA+S4nuL1auvyr5XsGrOsY0G3LeD3ZUft4PDsmpndBLuVthgvcQ7V2bIDYiKBAW0uUYmVsMXNOTrt8yyVCwI8ELHlQ=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "0",
+  "signBID": "MasMlS3rKupjqhvH93fkQW2UjwbN5vZMZsIKjTVij0EAky8V9LA+ZL5BK5VNmXKAAAV9QrEsg0Os78Yl04TH7qvu8FDU6kXmHk3Dl6OtcVO+IIcKGExVBky+C93Jwr8bGrO8Yu1hb6kaUgDWsLosXLa+VGdIy9hOMdXjRm2VWUc=",
+  "process": "2"
+}
+
+Process 22: Puzzle anwswer: 1484
+
+Process 22: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Joe",
+    "LName": "DiMaggio",
+    "SSNum": "111-22-3333",
+    "DOB": "1914.11.25",
+    "Diag": "SoreKnees",
+    "Treat": "RestFromSports",
+    "Rx": "Aspirin"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "1429f2d9c63e18e85b86bfb8920db5fd811338f26d2b7349f201857983bc0472",
+  "signedSHA256data": "eqI186strxsJnp/Q6AEkWJrC/2zxrv5dE3mdGq0cS/Nwx7iowu4HnnMPi6+BSec1909Cgl1aUEmIDDdm+EeAO1CXf1pt182MF611Gi8bLDZL3PeuCYZAyrUBOWGF/Wi9XRkQS6kWDZ+jGz2HBPLyerru16JDD+Omie2tzWll7l8=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "ecb3db42-dad1-416b-823c-73d822379485",
+  "signBID": "KdzRzX1QkCvvbrOKTN2v7qiCCd8v+g1JMvj4GuMJTVF8qdWTy/ugJPzEM4NQGhBdvLcWxUPMGd40S0NYcsYNPbgc+C02CNJ4s7wt3VCQtucAlLHzbC5jk07S9h7eDywA4sLYqV1/IqgAyg+IevvYBNngs5STDgCnoQQ4CWGmuiI=",
+  "process": "2"
+}
+
+Process 22: Puzzle anwswer: 2992
+
+Process 22: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Abraham",
+    "LName": "Lincoln",
+    "SSNum": "444-45-6888",
+    "DOB": "1809.02.12",
+    "Diag": "GreviousWound",
+    "Treat": "Surgery",
+    "Rx": "Whiskey"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "d2212135baa8e42b6d1f5642ca990e73eb3f9ccd9839ad306cf37a6f0208e781",
+  "signedSHA256data": "GyqetR5GXugY6cRP7N2zntDa9C6omrpCH9KQusboLJBI5HiqQSc2m3N0UDdbA+yKMUyKbX1VOCBdHdpvrjUHAfxlhs6L6J5C1BoJfG3RnFUCPg/UeK9atgRJy22RasmdUEk1a5MR9QM0EGbuqRG2pr+1epAVokRV8UmOAvd+mXY=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "cc9be237-0b1e-4623-a6b1-cbfb1bb6d648",
+  "signBID": "aeVucUYNr00gDfgKhVexBhGE5XjKMyo0meh5lwbofHJGk3KPU7RyXb2s57oQGwJN4nizEiOjJMzgQi+3Hbl40qpZIXhuOEcEL3LgOMQMdbk6NuACB5kzI/wL6K3tu+G0o3DmVYbOKUyd1ie+mqobUBc1gZIuVNXczG4pA0HXC/w=",
+  "process": "2"
+}
+
+Process 22: Puzzle anwswer: 4813
+
+Process 22: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "John",
+    "LName": "Kennedy",
+    "SSNum": "333-45-6999",
+    "DOB": "1917.05.29",
+    "Diag": "AddisonsDisease",
+    "Treat": "DrugTherapy",
+    "Rx": "Steroids"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "a34156f2b0279bd0f4328ff6026da126110072888a85b1c2ef4f71d5f6a5d059",
+  "signedSHA256data": "JNhEqt8n9WLx/JoLwkc69HtKk5KiM02OyRfn+mnJLO41gtjm4cU+7xZNuvUP3RwNzSK0VnDErZwtI+nOmes3/8Nr6FSqba/MGJdZDnloVITfS+NgAXuu+GWIukM+UTXdAY8oXmD6yvefo1uB89UYC7r/oH1KDv0kr86MoXccOno=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "f6eabe9c-8c19-4fe4-856f-5680b0355523",
+  "signBID": "FKKF+dLH5D2BZCxvL/u8QlL9UU7LApWpsKnWXhqp1/eUmOr8/AuaTjIxrlS3Lgv9Iiszjw7TRbg6xV1Rp9sIrLY7+EnYJwzg4uW+qYuSKN59hVYsHO3vKbhR4E6kIcqZoyF02w9vlPNqHysh3YvIC46vmlmYVHH+6dIJg7mPBn0=",
+  "process": "2"
+}
+
+Process 22: Puzzle anwswer: 3210
+
+Process 22: Pass unverified block to processor 0
+
+Process 22: Pass unverified block to processor 1
+
+Process 22: Pass unverified block to processor 2
+
+Process 22: Pass unverified block to processor 0
+
+Process 22: Pass unverified block to processor 0
+
+Process 22: Pass unverified block to processor 1
+
+Process 22: Pass unverified block to processor 2
+
+Process 22: Pass unverified block to processor 1
+
+Process 22: Pass unverified block to processor 0
+
+Process 22: Pass unverified block to processor 0
+
+Process 22: Pass unverified block to processor 0
+
+Process 22: Pass unverified block to processor 1
+
+Process 22: Pass unverified block to processor 1
+
+Process 22: Pass unverified block to processor 0
+
+Process 22: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "John",
+    "LName": "Smith",
+    "SSNum": "123-45-6789",
+    "DOB": "1996.03.07",
+    "Diag": "Chickenpox",
+    "Treat": "BedRest",
+    "Rx": "aspirin"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "1dec499abb690787619ce898caf8411de3f718a25eaaa9a948467de61712fa8e",
+  "signedSHA256data": "WUDWqb/BAtSBQ8XFiQ+es4qPJvqyI/oOjWFlfyJJnfzP21Fni2Y+LB9Y2CBctOVPq/muu0hlElcO6Ei2yw2rI0N4Yh1sSj/uxpfJLZL1vJQMJMDsK2f9XWzWCYypznr1zo20vCixdLnQX9GQtixvXbzMzavSxL3ejICZX7fkTGQ=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "05551304-633b-46db-bfba-b0f96e0e3713",
+  "signBID": "FTCcBMguwWW4rOyUggZ7IPfmXm8EyvETzNKJNB7awtnKe7u9tV5unw2S5oAoJGFeEu5WV7ZoCYE9KTiXyX03w8T/w+u48c2z0VlgQT7yvmRHuibpwVNmAfsGwbE+aelMCCqjZYgTeUVPN32+tuQhUnr+ziGE1ytodsO/QmsCzJE=",
+  "process": "0"
+}
+
+Process 22: Pass unverified block to processor 0
+
+Process 22: Pass unverified block to processor 2
+
+Process 22: Pass unverified block to processor 1
+
+Process 22: Puzzle anwswer: 2006
+
+Process 22: Pass unverified block to processor 1
+
+Process 22: Pass unverified block to processor 2
+
+Process 22: Pass unverified block to processor 2
+
+Process 22: Pass unverified block to processor 1
+
+Process 22: Pass unverified block to processor 2
+
+Process 22: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Rita",
+    "LName": "Vita",
+    "SSNum": "999-456-789",
+    "DOB": "1992.01.31",
+    "Diag": "ObessivePersonality",
+    "Treat": "TryToRelax",
+    "Rx": "Ibuprofen"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "6f97b2de4a68f1aa74e56be08a4006f9168f020de8fa2dd7d0dc6a3e2a79706b",
+  "signedSHA256data": "deRYLckdUlM3vYgYG7lyDBvFC1LHYOhFAqzuGbUh/ieth5YYLPnA/RJpEGmdIDd+AS92rbCWyYRSnTLTnOyAV+2l2WeR69nucaFf6gbIHd8JktrY4XnwQp2oJLiRh6Zb8zCFToplJLXZnxJkK7OL/tNSbNcIcLjSPUc8881tm+s=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "1baf6f72-aa49-4acb-a51c-dd892bbc65df",
+  "signBID": "GdALhUAy7lIY91i56PAdGDV3frAF2qUTDgXTUVffgYyoMi3VczsUftEr7AljQiuzISo9YOELzDIH1oy8nr4ucqmckhtjJL2gXnyYHDgjpEQlCJc1c8U0TUvmJCNLZVS0PIfL2YS9tPty65jn8gW+5J4v+qqudsSraoZq5M2I64c=",
+  "process": "1"
+}
+
+Process 22: Pass unverified block to processor 2
+
+Process 22: Puzzle anwswer: 3151
+
+Process 22: Pass unverified block to processor 2
+
+Process 22: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Bruce",
+    "LName": "Lee",
+    "SSNum": "456-789-123",
+    "DOB": "1940.11.27",
+    "Diag": "SoreStomach",
+    "Treat": "LessCombat",
+    "Rx": "Vicodine"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "481a8967072a98dda49eade3ffd43403d5dd337f936543caa9c284e0d486668e",
+  "signedSHA256data": "JI8j1GE3OTRj49fcBIlYRnXCNizG7Q7hUSnJe0Ph+N/4w5vVY1j8uOr0g7PJYoZB2t6lIgt0uT5ngPKgAoRReKmFoinMVrsjqyMaqD4K1/el2aCdkSKnn/xTn0j86r2W3RZqGQFVSY2iwxp1+l/zFoe84TYFrSwINk791r7GKns=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "e570bf0a-6f72-4c84-b7e1-66152d63b143",
+  "signBID": "M69rnB0XirJXpSNdAihHS/WbQfICR7+iF8HbjCS0dR2wyBsEpx0enYyAKhfIzayEK1Jfz0N6nIPsnFnUnOgLEKBcF68Pr5jO4GKfR9rcNUL8lfOmJ+t3QH4OFQbbBO4RUjjgosTsHxE/W2mLJLLJ1sYKKjO6WDUxj2iOV8Npz8A=",
+  "process": "1"
+}
+
+Process 22: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Wayne",
+    "LName": "Blaine",
+    "SSNum": "123-45-6777",
+    "DOB": "1942.07.07",
+    "Diag": "Measles",
+    "Treat": "WaitToGetBetter",
+    "Rx": "CodLiverOil"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "d0fb5506544b95f8fde5513689befda3a50f3607c388444b1ff56c8297a6cd3e",
+  "signedSHA256data": "JjmekePt87BHBKUDC06SAhD16xde/xjvjjfSJu3TIKIrO2tq8IGjEjhAbDQqKg77mcNYSfBfHnynQOHyoIMSh8N3whdicbrdtEE6FSAKZ3scYd1ZgLNgBm8wissPVIGINFsDxIovxVy+n0fz5KwTaXdcTnitCWvvCVyeO+TgPTI=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "2f86235f-0dd2-4856-92a5-b57e5d9f0f0a",
+  "signBID": "U2cQUQK1LRUMsaC4ywuVuqbx39wsoQi1vhqeN9dVOXFx1rfHSL9/ej7japnOr076sssne3oo/Uyn4KR7uROoLPjg94ELxhCM+v/Mkwd5dz231Y5Vsln6i0dOOz6WNhfWZ48big0S1rNoTpvHGJEYf6LjsYekZoiLvF5HsAS2kds=",
+  "process": "0"
+}
+
+Process 22: Puzzle anwswer: 2221
+
+Process 22: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Joe",
+    "LName": "Blow",
+    "SSNum": "123-45-6888",
+    "DOB": "1996.03.07",
+    "Diag": "Smallpox",
+    "Treat": "BedRest",
+    "Rx": "Whiskey"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "7ec61b021a47a246670e1bd672a02a50421c6e30354fea16cc1c802579797208",
+  "signedSHA256data": "E07Dsy3tVU+m7chIMkBAyv1tdrZtwFmI/vsZyDM2Fb6DTCsI/5RN8Zzodq0IoDGYFGevczjJEoPzcf6lWArN928g3wElOXTM0C9EcXSPIZcY4CdDwAcD6PVpP/gdhUviUkTO3C9PAnzDkTe+D1+N2COf2Sw8uPIUL4tX/hD3C0o=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "50da1440-24b4-4b20-8e41-c7f867fb61bb",
+  "signBID": "bHoHIMPJX2jfIGl7zxhch26Aj/vmSZWviV479nrGSwbrOJK2hm4ssy37D33/FGJKGeJxchJWgE3fLF4QZCrHX6PXW4Z6lyv89EWZprCRNiqMbUVarZcg0G+HtLy511rBc59qfIp26RvVz/jr/Z+Tk7hi/GWsmvs86hPdYjOaqys=",
+  "process": "0"
+}
+
+Process 22: Puzzle anwswer: 2220
+
+Process 22: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Sally",
+    "LName": "McCutty",
+    "SSNum": "123-456-999",
+    "DOB": "1970.01.01",
+    "Diag": "Migraine",
+    "Treat": "IcePack",
+    "Rx": "Almotriptan"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "af09557f8c9645f2d377810fed5ca1bc1bf13182e3ba80e41c2b04a2e80b2b9c",
+  "signedSHA256data": "XD5ulrpp2XlvTfkAoRsnSvw8NUO6YVTuORIF5ArFt7Ny5AA8FMHsdzfIQZwcJH5hq+jjjR7NsxZtbhAQuCliMRdB1MP7vheofinnusb952B8dtIjwAwWM59I0rpM8InNfEvC62ui0BrdEFyu9vmxND62twGmPE0OaMLkyddQ1mU=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "f2351b44-3a83-4cf5-a326-30d4942d456b",
+  "signBID": "A679fogor0B6kW6l+bxk2yZ2i2ddGBfFletARH+0HQY5y1Srf9OBnFrz+baqb2km8Qs+bzrGD9WgeBmCJzDjkOcqRXlaleShBRG1U4f/59kVwqpufV7DteObj7KybvPCvZ3uOyWgpi1MS1T54+R1pmdC8h9rBgBWy8LnRQY33ww=",
+  "process": "1"
+}
+
+Process 22: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Wei",
+    "LName": "Xu",
+    "SSNum": "123-456-333",
+    "DOB": "1996.03.22",
+    "Diag": "Shingles",
+    "Treat": "WaitForRelief",
+    "Rx": "Zovirax"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "f6e44bdc21e4e27d07bcdb840b01f5de7bb9969d06e7abcef396a93155946f85",
+  "signedSHA256data": "PaIHrx9hd1fx0ZbDrZHgdQCHyPPG7eluNqbAcUSRy9J+N39BzNlMHZUOmo+8+HIUPvF3CfYyg/7uub0dAGGOVcVj2xN3q68BB7X7JyiUp2JS4wkz1+/2NwiIkQuQH8OVF0E5ytSU4u0OrljV1crtkpqgsn0PKdeTivXglCHOmfE=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "81ccc571-cced-4d92-bfc6-67a0d6c5601b",
+  "signBID": "GNm3x5sLfdVorpV8BwHegdY/uz8jSSQ4owFaZH1bf8BdII+yzRPReSO1sD+7VgCvXuppiml4RaH6eGWoof/1/1N0P4me+Z2r/JLox6mY22eu94aWSTJ82Y4fSGqLlb2438a5cgRdfdKNfqT9ZeQpeA5c/DawHvSCOmw6PF14r38=",
+  "process": "1"
+}
+
+Process 22: Puzzle anwswer: 1016
+
+Process 22: Unverified Block Updated with New Unverified Block: {
+  "data": {
+    "FName": "Julie",
+    "LName": "Wilson",
+    "SSNum": "123-45-6999",
+    "DOB": "1996.03.07",
+    "Diag": "Insomnia",
+    "Treat": "Exercise",
+    "Rx": "HotPeppers"
+  },
+  "blocknum": 0,
+  "hashedSHA256data": "2a8bc57a3e49400b59cafd66693072cbb398db6c826fc814db5e814e0823de8b",
+  "signedSHA256data": "ZVLcMsJbPBYe5kFxJ/vbe3bBg5WZad/9pGuB3WVUFfx7z40F4e3IFMaKYVyrhHn5wrtGWdVHmf4DbSYY8OIveTyXDiNGuYrz5Z2JIY+huF7RXKCM7ZfuD4hVIw6EdQGUMma6UszpuKLc2ELSrehwSlKdOREOsmLA7qlrVO8ZPf4=",
+  "temptime": "May 26, 2020 10:45:50 PM",
+  "BlockID": "44e65f86-a5f6-4cd8-a56b-4725bda9d978",
+  "signBID": "M3Z7JeGhd/CpznhcyhPnA0llq5E5vajKpnhHIFXONkFpXZV36DKZg5bgRWotgl8xq5xh7pnEJOF65x1XSyomcz+jwlrmPzJGMwd0ge4DJb8BdB1sShe49G00yhtBw5RIxlebuHiuVFcTaFTXN5AH0s+OfWTnQnWT5yDUiF1EnuE=",
+  "process": "0"
+}
+
+Process 22: Puzzle anwswer: 4527
+
+
+
